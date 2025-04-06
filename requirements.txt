@@ -9,4 +9,5 @@ scipy
 scikit-learn
 sentencepiece
 rich>=13.0.0
-psutil>=5.9.0 
+psutil>=5.9.0
+gguf>=0.1.0 

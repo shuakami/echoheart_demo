@@ -7,8 +7,10 @@ from transformers import (
     Trainer,
     TrainingArguments,
     DataCollatorForLanguageModeling,
+    BitsAndBytesConfig
 )
 from datasets import load_dataset
+from peft import LoraConfig, get_peft_model, prepare_model_for_kbit_training
 from train_config import config
 from logger_utils import CustomTrainerCallback, console
 
@@ -85,16 +87,49 @@ def prepare_dataset(dataset_path):
     return tokenized_dataset, tokenizer
 
 def main():
+    # --- QLoRA 配置 --- 
+    quantization_config = BitsAndBytesConfig(
+        load_in_4bit=True,
+        bnb_4bit_quant_type="nf4",
+        bnb_4bit_compute_dtype=torch.bfloat16, # 使用 bfloat16 进行计算
+        bnb_4bit_use_double_quant=True, # 使用双量化
+    )
+    # ---------------------
+    
     # 准备数据集
     dataset, tokenizer = prepare_dataset(config.train_dataset_path)
     
-    # 加载模型
-    console.print("[bold cyan]加载模型...[/bold cyan]")
+    # 加载模型 (使用量化配置)
+    console.print("[bold cyan]加载量化模型 (QLoRA)...[/bold cyan]")
     model = AutoModelForCausalLM.from_pretrained(
         config.model_name,
+        quantization_config=quantization_config, # 应用量化配置
         trust_remote_code=True,
-        device_map="auto"
+        device_map="auto" # 自动映射设备
     )
+    
+    # --- PEFT 配置 --- 
+    model = prepare_model_for_kbit_training(model) # 准备模型进行 k-bit 训练
+    
+    # 查找所有线性层以应用 LoRA
+    # 对于 Qwen2，通常是 q_proj, k_proj, v_proj, o_proj, gate_proj, up_proj, down_proj
+    # 可以通过打印 model 来确认具体层名
+    # print(model)
+    target_modules = ["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"]
+    
+    lora_config = LoraConfig(
+        r=16, # LoRA 秩 (rank)，可以尝试 8, 16, 32, 64
+        lora_alpha=32, # LoRA alpha，通常是 r 的两倍
+        target_modules=target_modules,
+        lora_dropout=0.05, # Dropout 比例
+        bias="none", # 通常设置为 none
+        task_type="CAUSAL_LM",
+    )
+    
+    model = get_peft_model(model, lora_config) # 应用 PEFT 配置
+    console.print("[bold green]PEFT LoRA 配置已应用。[/bold green]")
+    model.print_trainable_parameters() # 打印可训练参数量
+    # -------------------
     
     # 设置训练参数
     training_args = TrainingArguments(
@@ -107,8 +142,10 @@ def main():
         max_grad_norm=config.max_grad_norm,
         save_steps=config.save_steps,
         logging_steps=config.logging_steps,
-        fp16=config.fp16,
-        gradient_checkpointing=True,
+        fp16=config.fp16, # 即使使用QLoRA，也通常启用fp16/bf16进行训练
+        bf16=torch.cuda.is_bf16_supported(), # 如果GPU支持bf16，优先使用bf16
+        gradient_checkpointing=True, # 仍然启用梯度检查点
+        optim="paged_adamw_8bit", # 使用 bitsandbytes 提供的优化器以节省显存
         seed=config.seed,
         report_to="none",
     )
@@ -128,10 +165,14 @@ def main():
     # 开始训练
     trainer.train()
     
-    # 保存模型
-    console.print("[bold cyan]保存模型...[/bold cyan]")
-    trainer.save_model()
+    # 保存适配器模型 (LoRA 参数)
+    console.print("[bold cyan]保存 LoRA 适配器模型...[/bold cyan]")
+    # Trainer 会自动处理 PEFT 模型的保存
+    trainer.save_model() 
+    # tokenizer 通常也需要保存，以防有更改
     tokenizer.save_pretrained(config.output_dir)
+    
+    console.print("QLoRA 训练完成！适配器保存在:", config.output_dir)
 
 if __name__ == "__main__":
     main()

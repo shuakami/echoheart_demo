@@ -2,6 +2,7 @@ import os
 import json
 import torch
 import argparse
+import gc # 引入垃圾回收模块，辅助清理
 from transformers import (
     AutoModelForCausalLM,
     AutoTokenizer,
@@ -10,7 +11,8 @@ from transformers import (
     DataCollatorForLanguageModeling,
     BitsAndBytesConfig
 )
-from datasets import load_dataset
+from datasets import load_dataset, Dataset
+from torch.utils.data import DataLoader # 用于创建测试 DataLoader
 from peft import LoraConfig, get_peft_model, prepare_model_for_kbit_training
 from train_config import config
 from logger_utils import CustomTrainerCallback, console
@@ -23,34 +25,95 @@ def get_gpu_memory_gb():
         return total_mem_gb
     return 0
 
-def auto_configure_training_params(gpu_memory_gb):
-    """根据 GPU 显存自动配置训练参数 (启发式)。"""
-    console.print(f"[dim]检测到 GPU 总显存: {gpu_memory_gb:.2f} GB[/dim]")
+def find_max_batch_size(model, tokenizer, dataset: Dataset, initial_batch_size=8):
+    """
+    通过试错法动态查找单个 GPU 能容纳的最大 per_device_train_batch_size。
+    """
+    console.print(f"[bold blue]开始动态查找最大可用 batch size (初始尝试: {initial_batch_size})...[/bold blue]")
     
-    # 目标有效批次大小
-    target_effective_batch_size = 16 
+    data_collator = DataCollatorForLanguageModeling(tokenizer=tokenizer, mlm=False)
     
-    if gpu_memory_gb <= 10: # 例如 T4 (15GB 但可用可能更少) 或更小
-        per_device_train_batch_size = 1
-        gradient_accumulation_steps = target_effective_batch_size // per_device_train_batch_size
-        console.print(f"[yellow]显存较小 (<10GB)，设置: batch_size=1, grad_acc={gradient_accumulation_steps}[/yellow]")
-    elif 10 < gpu_memory_gb <= 16: # 例如 T4
-        per_device_train_batch_size = 2
-        gradient_accumulation_steps = target_effective_batch_size // per_device_train_batch_size
-        console.print(f"[cyan]显存中等 (10-16GB)，设置: batch_size=2, grad_acc={gradient_accumulation_steps}[/cyan]")
-    elif 16 < gpu_memory_gb <= 24: # 例如 V100 (16/32GB), P100 (16GB)
-        per_device_train_batch_size = 4 
-        gradient_accumulation_steps = target_effective_batch_size // per_device_train_batch_size
-        console.print(f"[blue]显存较大 (16-24GB)，设置: batch_size=4, grad_acc={gradient_accumulation_steps}[/blue]")
-    else: # > 24GB, 例如 A100
-        per_device_train_batch_size = 8 # 可以更激进一些，但保守起见设为 8
-        gradient_accumulation_steps = target_effective_batch_size // per_device_train_batch_size
-        console.print(f"[green]显存充足 (>24GB)，设置: batch_size=8, grad_acc={gradient_accumulation_steps}[/green]")
-        
-    # 确保 grad_acc 至少为 1
-    gradient_accumulation_steps = max(1, gradient_accumulation_steps)
-        
-    return per_device_train_batch_size, gradient_accumulation_steps
+    # 从初始值开始尝试，逐步减小
+    test_batch_size = initial_batch_size
+    max_found_batch_size = 0
+
+    while test_batch_size >= 1:
+        # 确保 test_batch_size 是整数
+        current_test_bs = int(test_batch_size)
+        if current_test_bs < 1: # 防止变成0或负数
+             break 
+             
+        console.print(f"[dim]尝试 batch_size = {current_test_bs}...[/dim]")
+        try:
+            # 只取一小批数据进行测试
+            if len(dataset) < current_test_bs:
+                 console.print(f"[yellow]警告：数据集大小 ({len(dataset)}) 小于测试 batch size ({current_test_bs})。跳过此 batch size。[/yellow]")
+                 test_batch_size //= 2 # 直接尝试更小的
+                 continue
+                 
+            small_dataset = dataset.select(range(current_test_bs)) 
+            
+            # 手动模拟一个训练步骤
+            model.train() # 确保模型在训练模式
+            
+            # 准备批次数据
+            raw_batch = [small_dataset[i] for i in range(current_test_bs)]
+            batch = data_collator(raw_batch)
+            
+            # 将数据移到 GPU (如果可用)
+            if torch.cuda.is_available():
+                 batch = {k: v.to(model.device) for k, v in batch.items()}
+
+            # --- 执行前向和反向传播 ---
+            with torch.cuda.amp.autocast(enabled=torch.cuda.is_bf16_supported()): # 模拟混合精度
+                outputs = model(**batch)
+                loss = outputs.loss
+                
+            # 反向传播 (这是显存消耗的关键部分)
+            loss.backward() 
+            # --------------------------
+
+            # 如果成功到达这里，说明这个 batch size 可行
+            max_found_batch_size = current_test_bs
+            console.print(f"[bold green]成功！找到可用最大 batch_size = {max_found_batch_size}[/bold green]")
+            
+            # 清理显存为下一次迭代或实际训练做准备
+            model.zero_grad(set_to_none=True) # 更推荐 set_to_none=True
+            del loss, outputs, batch, raw_batch, small_dataset
+            gc.collect()
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+                
+            return max_found_batch_size # 找到即可返回
+
+        except torch.cuda.OutOfMemoryError:
+            console.print(f"[yellow]显存不足 (OOM) for batch_size = {current_test_bs}。正在尝试更小的...[/yellow]")
+            
+            # 清理显存
+            model.zero_grad(set_to_none=True)
+            gc.collect()
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+                
+            # 减小 batch size，通常减半尝试
+            test_batch_size //= 2 
+            
+        except Exception as e:
+             console.print(f"[bold red]测试 batch size {current_test_bs} 时发生意外错误: {e}[/bold red]")
+             # 清理显存
+             model.zero_grad(set_to_none=True)
+             gc.collect()
+             if torch.cuda.is_available():
+                 torch.cuda.empty_cache()
+             test_batch_size //= 2 # 仍然尝试更小的
+
+    if max_found_batch_size == 0:
+         console.print("[bold red]错误：即使 batch_size = 1 也无法运行。请检查模型大小、数据或 GPU 状态。[/bold red]")
+         # 可以选择退出或返回 1 作为最后的尝试
+         return 1 # 或者 raise RuntimeError("无法找到合适的 batch size")
+         
+    # 确保返回的是整数
+    return int(max_found_batch_size)
 
 def prepare_dataset(dataset_path, model_name):
     # 加载数据集
@@ -125,11 +188,6 @@ def prepare_dataset(dataset_path, model_name):
     return tokenized_dataset, tokenizer
 
 def main(args):
-    # --- 获取 GPU 显存并自动配置参数 --- 
-    gpu_mem = get_gpu_memory_gb()
-    auto_batch_size, auto_grad_acc = auto_configure_training_params(gpu_mem)
-    # -------------------------------------
-    
     # --- QLoRA 配置 --- 
     quantization_config = BitsAndBytesConfig(
         load_in_4bit=True,
@@ -139,7 +197,7 @@ def main(args):
     )
     # ---------------------
     
-    # 准备数据集 (使用命令行参数)
+    # 准备数据集 (在模型加载前，因为测试 batch size 需要数据集)
     dataset, tokenizer = prepare_dataset(args.dataset_file, args.base_model_name)
     
     # 加载模型 (使用量化配置和命令行参数)
@@ -173,6 +231,29 @@ def main(args):
     console.print("[bold green]PEFT LoRA 配置已应用。[/bold green]")
     model.print_trainable_parameters() # 打印可训练参数量
     # -------------------
+
+    # --- 动态确定 Batch Size 和 Grad Acc ---
+    # 根据总显存估算一个合理的初始尝试值
+    gpu_mem_gb = get_gpu_memory_gb()
+    initial_test_bs = 8
+    if gpu_mem_gb > 24:
+        initial_test_bs = 16
+    elif gpu_mem_gb < 10:
+         initial_test_bs = 4
+         
+    # 运行测试找到最大 batch size
+    determined_batch_size = find_max_batch_size(
+        model, 
+        tokenizer, 
+        dataset['train'], # 使用训练集的一小部分
+        initial_batch_size=initial_test_bs 
+    )
+    
+    # 计算梯度累积步数
+    target_effective_batch_size = 16 # 目标有效批次大小
+    gradient_accumulation_steps = max(1, target_effective_batch_size // determined_batch_size)
+    console.print(f"[bold magenta]动态确定参数: batch_size={determined_batch_size}, grad_acc={gradient_accumulation_steps}[/bold magenta]")
+    # -----------------------------------------
     
     # --- 确定混合精度设置 --- 
     use_bf16 = torch.cuda.is_bf16_supported()
@@ -182,12 +263,12 @@ def main(args):
     console.print(f"[dim]混合精度设置: BF16={'可用' if use_bf16 else '不可用'}, FP16={'启用' if use_fp16 else '禁用'}[/dim]")
     # --------------------------
     
-    # 设置训练参数 (使用自动配置的值)
+    # 设置训练参数 (使用动态确定的值)
     training_args = TrainingArguments(
         output_dir=config.output_dir,
         num_train_epochs=config.num_train_epochs,
-        per_device_train_batch_size=auto_batch_size, # <--- 使用自动配置的值
-        gradient_accumulation_steps=auto_grad_acc,   # <--- 使用自动配置的值
+        per_device_train_batch_size=determined_batch_size, # <--- 使用动态确定的值
+        gradient_accumulation_steps=gradient_accumulation_steps, # <--- 使用计算出的值
         learning_rate=config.learning_rate,
         weight_decay=config.weight_decay,
         max_grad_norm=config.max_grad_norm,

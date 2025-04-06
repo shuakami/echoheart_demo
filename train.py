@@ -108,9 +108,9 @@ def main():
         save_steps=config.save_steps,
         logging_steps=config.logging_steps,
         fp16=config.fp16,
+        gradient_checkpointing=True,
         seed=config.seed,
         report_to="none",
-        # gradient_checkpointing=True, # Consider uncommenting if OOM persists
     )
     
     # 创建训练器

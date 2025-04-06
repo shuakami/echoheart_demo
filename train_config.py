@@ -8,7 +8,7 @@ class TrainingConfig:
     output_dir: str = "output/qwen-ft"  # 输出目录
 
     # 训练参数
-    num_train_epochs: int = 1  # 训练轮数
+    num_train_epochs: int = 2  # 训练轮数
     per_device_train_batch_size: int = 2  # 每个设备的批次大小
     gradient_accumulation_steps: int = 4  # 梯度累积步数
     learning_rate: float = 2e-5  # 学习率

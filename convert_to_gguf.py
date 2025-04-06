@@ -27,7 +27,7 @@ def run_command(command, cwd=None, capture_output=False):
 
 def main(model_dir, output_file, llama_cpp_dir="llama.cpp", out_type="f16"):
     print(f"-- Starting GGUF Conversion --")
-    print(f"   Input HF Model Dir: {model_dir}")
+    print(f"   Input Merged HF Model Dir: {model_dir}")
     print(f"   Output GGUF File: {output_file}")
     print(f"   Output Type: {out_type}")
     print(f"   Llama.cpp Dir: {llama_cpp_dir}")
@@ -37,7 +37,7 @@ def main(model_dir, output_file, llama_cpp_dir="llama.cpp", out_type="f16"):
     llama_cpp_path = Path(llama_cpp_dir).resolve()
 
     if not model_path.is_dir():
-        print(f"Error: Input model directory not found: {model_path}")
+        print(f"Error: Input merged model directory not found: {model_path}")
         sys.exit(1)
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -84,7 +84,7 @@ def main(model_dir, output_file, llama_cpp_dir="llama.cpp", out_type="f16"):
          run_command(["find", str(llama_cpp_path), "-name", "*.py"])
          sys.exit(1)
 
-    print(f"\nStarting conversion process...")
+    print(f"\nStarting conversion process for merged model...")
     cmd = [
         sys.executable, 
         str(convert_script_path),
@@ -100,13 +100,11 @@ def main(model_dir, output_file, llama_cpp_dir="llama.cpp", out_type="f16"):
         print(f"   GGUF file saved to: {output_path}")
     else:
         print(f"\n-- Conversion failed! --")
-        print("   Note: Conversion might have failed because the input directory contains only LoRA adapters.")
-        print("   Consider merging the adapter with the base model first before converting to GGUF.")
         sys.exit(1)
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Convert a Hugging Face model to GGUF format using llama.cpp.")
-    parser.add_argument("--model_dir", type=str, required=True, help="Directory containing the trained Hugging Face model or LoRA adapter.")
+    parser = argparse.ArgumentParser(description="Convert a merged Hugging Face model to GGUF format using llama.cpp.")
+    parser.add_argument("--model_dir", type=str, required=True, help="Directory containing the **merged** Hugging Face model.")
     parser.add_argument("--output_file", type=str, required=True, help="Path to save the output GGUF file.")
     parser.add_argument("--out_type", type=str, default="f16", help="Type of output quantization (e.g., f16, q4_0, q4_k_m, q8_0). Default: f16.")
     args = parser.parse_args()

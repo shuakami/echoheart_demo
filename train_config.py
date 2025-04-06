@@ -9,7 +9,7 @@ class TrainingConfig:
 
     # 训练参数
     num_train_epochs: int = 3  # 训练轮数
-    per_device_train_batch_size: int = 4  # 每个设备的批次大小
+    per_device_train_batch_size: int = 2  # 每个设备的批次大小
     gradient_accumulation_steps: int = 4  # 梯度累积步数
     learning_rate: float = 2e-5  # 学习率
     weight_decay: float = 0.01  # 权重衰减

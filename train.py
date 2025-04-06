@@ -131,6 +131,12 @@ def main():
     model.print_trainable_parameters() # 打印可训练参数量
     # -------------------
     
+    # --- 确定混合精度设置 --- 
+    use_bf16 = torch.cuda.is_bf16_supported()
+    use_fp16 = not use_bf16 and config.fp16 # 仅在不支持 bf16 时才使用 fp16
+    console.print(f"[dim]混合精度设置: BF16={'可用' if use_bf16 else '不可用'}, FP16={'启用' if use_fp16 else '禁用'}[/dim]")
+    # --------------------------
+    
     # 设置训练参数
     training_args = TrainingArguments(
         output_dir=config.output_dir,
@@ -142,8 +148,8 @@ def main():
         max_grad_norm=config.max_grad_norm,
         save_steps=config.save_steps,
         logging_steps=config.logging_steps,
-        fp16=config.fp16, # 即使使用QLoRA，也通常启用fp16/bf16进行训练
-        bf16=torch.cuda.is_bf16_supported(), # 如果GPU支持bf16，优先使用bf16
+        fp16=use_fp16, # <--- 使用计算后的值
+        bf16=use_bf16, # <--- 使用计算后的值
         gradient_checkpointing=True, # 仍然启用梯度检查点
         optim="paged_adamw_8bit", # 使用 bitsandbytes 提供的优化器以节省显存
         seed=config.seed,

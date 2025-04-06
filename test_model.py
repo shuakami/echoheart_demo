@@ -18,20 +18,25 @@ def run_inference(model, tokenizer, prompt):
         text = tokenizer.apply_chat_template(
             messages, tokenize=False, add_generation_prompt=True
         )
-        model_inputs = tokenizer([text], return_tensors="pt").to(model.device)
+        # 注意：确保 tokenizer 返回 attention_mask
+        model_inputs = tokenizer([text], return_tensors="pt", return_attention_mask=True).to(model.device)
         
         console.print("[italic cyan]正在生成回复...[/italic cyan]")
-        # 生成回复
+        # 生成回复，添加控制参数
         with torch.no_grad():
             generated_ids = model.generate(
                 model_inputs.input_ids,
-                max_new_tokens=256 # 稍微减少最大长度以适应非交互式测试
+                attention_mask=model_inputs.attention_mask, # 明确传递 attention_mask
+                max_new_tokens=256, 
+                repetition_penalty=1.15, # 添加重复惩罚 (可以调整 1.1 - 1.3 试试)
+                pad_token_id=tokenizer.eos_token_id # 明确设置 pad_token_id
             )
         
         # 解码生成的 ID，排除输入部分
-        generated_ids = [
-            output_ids[len(input_ids):] for input_ids, output_ids in zip(model_inputs.input_ids, generated_ids)
-        ]
+        # Ensure slicing logic is correct even if input_ids length varies slightly (unlikely here but safer)
+        input_ids_len = model_inputs.input_ids.shape[1]
+        generated_ids = generated_ids[:, input_ids_len:]
+        
         response = tokenizer.batch_decode(generated_ids, skip_special_tokens=True)[0]
         
         console.print(Panel(response, title="[bold green]模型回复[/bold green]", border_style="green"))
@@ -45,6 +50,11 @@ def main(model_path):
     console.print(Panel(f"[bold cyan]正在加载模型和tokenizer: {model_path}[/bold cyan]"))
     try:
         tokenizer = AutoTokenizer.from_pretrained(model_path, trust_remote_code=True)
+        # 确保 tokenizer 有 pad_token，如果没有，设置为 eos_token
+        if tokenizer.pad_token is None:
+            tokenizer.pad_token = tokenizer.eos_token
+            print("[dim]Tokenizer pad_token was None, set to eos_token.[/dim]")
+            
         model = AutoModelForCausalLM.from_pretrained(
             model_path,
             trust_remote_code=True,
@@ -57,14 +67,12 @@ def main(model_path):
         return
 
     # --- 非交互式测试 --- 
-    # 定义一组预设的测试指令
     test_prompts = [
         "EchoHeart是什么？",
         "你的开发者是谁？",
         "宋怡敏和罗雨晨有何关系？",
         "你会做什么？",
         "你支持多少种语言？"
-        # 您可以在这里添加更多测试指令
     ]
 
     console.print("\n[bold cyan]开始运行预设指令测试...[/bold cyan]\n")

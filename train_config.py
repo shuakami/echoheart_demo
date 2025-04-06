@@ -7,10 +7,10 @@ class TrainingConfig:
     # train_dataset_path: str = "data/converted_dataset.json"  # 训练数据集路径
     output_dir: str = "output/qwen2-1.5b-qlora-ft"  # 输出目录 (反映QLoRA)
 
-    # 训练参数 (为 QLoRA 调整)
+    # 训练参数 (部分参数由 train.py 根据 GPU 显存自动调整)
     num_train_epochs: int = 2  # 训练轮数 
-    per_device_train_batch_size: int = 2  # 每个设备的批次大小 (尝试调回 2)
-    gradient_accumulation_steps: int = 4  # 梯度累积步数 (调回 4)
+    # per_device_train_batch_size: int = 2  # <-- 由 train.py 自动确定
+    # gradient_accumulation_steps: int = 4  # <-- 由 train.py 自动确定
     learning_rate: float = 2e-4  # LoRA 训练通常使用稍高的学习率 (例如 1e-4 或 2e-4)
     weight_decay: float = 0.01  # 权重衰减
     max_grad_norm: float = 1.0  # 梯度裁剪

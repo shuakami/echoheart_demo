@@ -15,6 +15,43 @@ from peft import LoraConfig, get_peft_model, prepare_model_for_kbit_training
 from train_config import config
 from logger_utils import CustomTrainerCallback, console
 
+def get_gpu_memory_gb():
+    """获取可用 GPU 的总显存 (GB)，如果没有 GPU 则返回 0。"""
+    if torch.cuda.is_available():
+        total_mem_bytes = torch.cuda.get_device_properties(0).total_memory
+        total_mem_gb = total_mem_bytes / (1024**3)
+        return total_mem_gb
+    return 0
+
+def auto_configure_training_params(gpu_memory_gb):
+    """根据 GPU 显存自动配置训练参数 (启发式)。"""
+    console.print(f"[dim]检测到 GPU 总显存: {gpu_memory_gb:.2f} GB[/dim]")
+    
+    # 目标有效批次大小
+    target_effective_batch_size = 16 
+    
+    if gpu_memory_gb <= 10: # 例如 T4 (15GB 但可用可能更少) 或更小
+        per_device_train_batch_size = 1
+        gradient_accumulation_steps = target_effective_batch_size // per_device_train_batch_size
+        console.print(f"[yellow]显存较小 (<10GB)，设置: batch_size=1, grad_acc={gradient_accumulation_steps}[/yellow]")
+    elif 10 < gpu_memory_gb <= 16: # 例如 T4
+        per_device_train_batch_size = 2
+        gradient_accumulation_steps = target_effective_batch_size // per_device_train_batch_size
+        console.print(f"[cyan]显存中等 (10-16GB)，设置: batch_size=2, grad_acc={gradient_accumulation_steps}[/cyan]")
+    elif 16 < gpu_memory_gb <= 24: # 例如 V100 (16/32GB), P100 (16GB)
+        per_device_train_batch_size = 4 
+        gradient_accumulation_steps = target_effective_batch_size // per_device_train_batch_size
+        console.print(f"[blue]显存较大 (16-24GB)，设置: batch_size=4, grad_acc={gradient_accumulation_steps}[/blue]")
+    else: # > 24GB, 例如 A100
+        per_device_train_batch_size = 8 # 可以更激进一些，但保守起见设为 8
+        gradient_accumulation_steps = target_effective_batch_size // per_device_train_batch_size
+        console.print(f"[green]显存充足 (>24GB)，设置: batch_size=8, grad_acc={gradient_accumulation_steps}[/green]")
+        
+    # 确保 grad_acc 至少为 1
+    gradient_accumulation_steps = max(1, gradient_accumulation_steps)
+        
+    return per_device_train_batch_size, gradient_accumulation_steps
+
 def prepare_dataset(dataset_path, model_name):
     # 加载数据集
     console.print("[bold cyan]加载数据集...[/bold cyan]")
@@ -88,6 +125,11 @@ def prepare_dataset(dataset_path, model_name):
     return tokenized_dataset, tokenizer
 
 def main(args):
+    # --- 获取 GPU 显存并自动配置参数 --- 
+    gpu_mem = get_gpu_memory_gb()
+    auto_batch_size, auto_grad_acc = auto_configure_training_params(gpu_mem)
+    # -------------------------------------
+    
     # --- QLoRA 配置 --- 
     quantization_config = BitsAndBytesConfig(
         load_in_4bit=True,
@@ -140,12 +182,12 @@ def main(args):
     console.print(f"[dim]混合精度设置: BF16={'可用' if use_bf16 else '不可用'}, FP16={'启用' if use_fp16 else '禁用'}[/dim]")
     # --------------------------
     
-    # 设置训练参数
+    # 设置训练参数 (使用自动配置的值)
     training_args = TrainingArguments(
         output_dir=config.output_dir,
         num_train_epochs=config.num_train_epochs,
-        per_device_train_batch_size=config.per_device_train_batch_size,
-        gradient_accumulation_steps=config.gradient_accumulation_steps,
+        per_device_train_batch_size=auto_batch_size, # <--- 使用自动配置的值
+        gradient_accumulation_steps=auto_grad_acc,   # <--- 使用自动配置的值
         learning_rate=config.learning_rate,
         weight_decay=config.weight_decay,
         max_grad_norm=config.max_grad_norm,

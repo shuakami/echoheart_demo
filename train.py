@@ -24,7 +24,7 @@ def prepare_dataset(dataset_path):
     # 确保设置 pad_token, 对于 Qwen 通常设置为 <|endoftext|> 或 eos_token
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token 
-        # 或者 tokenizer.pad_token = "<|endoftext|>
+        # 或者 tokenizer.pad_token = "<|endoftext|>"
         print(f"[dim]Tokenizer pad_token was None, set to {tokenizer.pad_token}.[/dim]")
 
     # Qwen的模板通常不需要在末尾添加EOS，apply_chat_template会处理

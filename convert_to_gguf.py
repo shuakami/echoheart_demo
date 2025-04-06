@@ -66,10 +66,10 @@ def main(model_dir, output_file, llama_cpp_dir="llama.cpp", out_type="f16"):
     print("\nSearching for conversion script in llama.cpp directory...")
     convert_script_path = None
     possible_scripts = [
+        llama_cpp_path / "convert_hf_to_gguf.py",
         llama_cpp_path / "convert.py",
-        llama_cpp_path / "convert-hf-to-gguf.py", 
-        *list(llama_cpp_path.glob("**/convert.py")),
-        *list(llama_cpp_path.glob("**/convert-hf-to-gguf.py"))
+        *list(llama_cpp_path.glob("**/convert_hf_to_gguf.py")),
+        *list(llama_cpp_path.glob("**/convert.py"))
     ]
     
     for script in possible_scripts:
@@ -79,7 +79,7 @@ def main(model_dir, output_file, llama_cpp_dir="llama.cpp", out_type="f16"):
             break
             
     if convert_script_path is None:
-         print(f"Error: Could not find a suitable conversion script (like convert.py) in {llama_cpp_path} or its subdirectories.")
+         print(f"Error: Could not find a suitable conversion script (like convert_hf_to_gguf.py or convert.py) in {llama_cpp_path} or its subdirectories.")
          print("Listing Python files in llama.cpp directory:")
          run_command(["find", str(llama_cpp_path), "-name", "*.py"])
          sys.exit(1)

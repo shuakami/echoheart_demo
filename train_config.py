@@ -3,7 +3,7 @@ from dataclasses import dataclass
 @dataclass
 class TrainingConfig:
     # 模型配置
-    model_name: str = "Qwen/Qwen2.5-1.5B-Instruct"  # 您选择的模型
+    model_name: str = "Qwen/Qwen2.5-1.5B-Instruct"  # 选择的模型
     train_dataset_path: str = "data/converted_dataset.json"  # 训练数据集路径
     output_dir: str = "output/qwen2-1.5b-qlora-ft"  # 输出目录 (反映QLoRA)
 

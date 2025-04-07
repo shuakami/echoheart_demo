@@ -16,6 +16,14 @@ from torch.utils.data import DataLoader # 用于创建测试 DataLoader
 from peft import LoraConfig, get_peft_model, prepare_model_for_kbit_training
 from logger_utils import CustomTrainerCallback, console
 
+# 导入 ModelScope 相关工具
+try:
+    import modelscope_utils
+    modelscope_available = True
+except ImportError:
+    modelscope_available = False
+    print("注意: modelscope_utils 模块未找到。如果无法连接到 Hugging Face，将无法回退到 ModelScope。")
+
 def get_gpu_memory_gb():
     """获取可用 GPU 的总显存 (GB)，如果没有 GPU 则返回 0。"""
     if torch.cuda.is_available():
@@ -121,7 +129,24 @@ def prepare_dataset(dataset_path, model_name):
     
     # 获取tokenizer
     console.print("[bold cyan]加载tokenizer...[/bold cyan]")
-    tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
+    
+    # 使用 modelscope_utils 加载 tokenizer (如果可用)
+    if modelscope_available:
+        try:
+            _, tokenizer = modelscope_utils.get_model_from_either(
+                model_name,
+                None,  # 不需要加载模型
+                AutoTokenizer,
+                use_modelscope=None,  # 自动决定
+                trust_remote_code=True
+            )
+            if tokenizer is None:
+                raise ValueError("tokenizer 加载失败")
+        except Exception as e:
+            console.print(f"[yellow]从 ModelScope 加载 tokenizer 失败: {e}，回退到常规方法[/yellow]")
+            tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
+    else:
+        tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
     
     # 确保设置 pad_token, 对于 Qwen 通常设置为 <|endoftext|> 或 eos_token
     if tokenizer.pad_token is None:
@@ -201,12 +226,34 @@ def main(args):
     
     # 加载模型 (使用量化配置和命令行参数)
     console.print("[bold cyan]加载量化模型 (QLoRA)...[/bold cyan]")
-    model = AutoModelForCausalLM.from_pretrained(
-        args.base_model_name, # <--- 使用命令行参数
-        quantization_config=quantization_config, # 应用量化配置
-        trust_remote_code=True,
-        device_map="auto" # 自动映射设备
-    )
+    
+    # 尝试使用 ModelScope (如果可用)
+    if modelscope_available:
+        try:
+            model, _ = modelscope_utils.get_model_from_either(
+                args.base_model_name,
+                AutoModelForCausalLM,
+                None,  # 不需要加载 tokenizer，已经加载了
+                use_modelscope=None,  # 自动决定
+                quantization_config=quantization_config,
+                trust_remote_code=True,
+                device_map="auto"
+            )
+        except Exception as e:
+            console.print(f"[yellow]从 ModelScope 加载模型失败: {e}，回退到常规方法[/yellow]")
+            model = AutoModelForCausalLM.from_pretrained(
+                args.base_model_name,
+                quantization_config=quantization_config,
+                trust_remote_code=True,
+                device_map="auto"
+            )
+    else:
+        model = AutoModelForCausalLM.from_pretrained(
+            args.base_model_name,
+            quantization_config=quantization_config,
+            trust_remote_code=True,
+            device_map="auto"
+        )
     
     # --- PEFT 配置 --- 
     model = prepare_model_for_kbit_training(model) # 准备模型进行 k-bit 训练

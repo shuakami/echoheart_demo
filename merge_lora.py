@@ -5,6 +5,14 @@ from peft import PeftModel
 import os
 from pathlib import Path
 
+# 导入 ModelScope 相关工具
+try:
+    import modelscope_utils
+    modelscope_available = True
+except ImportError:
+    modelscope_available = False
+    print("注意: modelscope_utils 模块未找到。如果无法连接到 Hugging Face，将无法回退到 ModelScope。")
+
 def merge_lora_adapter(base_model_name, adapter_path, output_path):
     """Merges a LoRA adapter into the base model and saves the merged model."""
     print(f"-- Starting LoRA Merge --")
@@ -27,15 +35,40 @@ def merge_lora_adapter(base_model_name, adapter_path, output_path):
     # ---------------------------------------------------------------------------------
 
     try:
-        print(f"\nLoading base model: {base_model_name}...")
-        # Load base model in higher precision for merge (e.g., float16 or bfloat16 if available)
+        # 确定适合用于合并的计算精度
         compute_dtype = torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16
-        base_model = AutoModelForCausalLM.from_pretrained(
-            base_model_name,
-            torch_dtype=compute_dtype,
-            trust_remote_code=True,
-            device_map="auto" # Load onto available device
-        )
+        
+        # 1. 加载基础模型，优先使用 ModelScope (如果可用)
+        print(f"\nLoading base model: {base_model_name}...")
+        if modelscope_available:
+            try:
+                print("尝试使用 ModelScope 加载基础模型...")
+                base_model, _ = modelscope_utils.get_model_from_either(
+                    base_model_name,
+                    AutoModelForCausalLM,
+                    None,  # 不需要同时加载分词器
+                    use_modelscope=None,  # 自动决定
+                    torch_dtype=compute_dtype,
+                    trust_remote_code=True,
+                    device_map="auto"
+                )
+            except Exception as e:
+                print(f"ModelScope 加载失败: {e}")
+                print("回退到 Hugging Face...")
+                base_model = AutoModelForCausalLM.from_pretrained(
+                    base_model_name,
+                    torch_dtype=compute_dtype,
+                    trust_remote_code=True,
+                    device_map="auto"
+                )
+        else:
+            # 使用原始方法
+            base_model = AutoModelForCausalLM.from_pretrained(
+                base_model_name,
+                torch_dtype=compute_dtype,
+                trust_remote_code=True,
+                device_map="auto" # Load onto available device
+            )
 
         print(f"Loading adapter from: {adapter_path}...")
         # Load the LoRA adapter onto the base model
@@ -54,9 +87,43 @@ def merge_lora_adapter(base_model_name, adapter_path, output_path):
         # Save the merged model
         merged_model.save_pretrained(output_path_obj)
 
-        # Save the tokenizer as well (important!)
+        # 3. 加载并保存 Tokenizer (先尝试从适配器目录加载，确保一致性)
         print(f"Saving tokenizer to: {output_path}...")
-        tokenizer = AutoTokenizer.from_pretrained(adapter_path_obj) # Load tokenizer from adapter dir
+        try:
+            if modelscope_available:
+                print("尝试使用 ModelScope 加载 tokenizer...")
+                _, tokenizer = modelscope_utils.get_model_from_either(
+                    adapter_path,  # 先尝试从适配器目录加载
+                    None,  # 不需要加载模型
+                    AutoTokenizer,
+                    use_modelscope=None,  # 自动决定
+                    trust_remote_code=True
+                )
+                if tokenizer is None:
+                    raise ValueError("tokenizer 加载失败")
+            else:
+                tokenizer = AutoTokenizer.from_pretrained(adapter_path_obj, trust_remote_code=True)
+        except Exception as adapter_e:
+            print(f"从适配器目录加载 tokenizer 失败: {adapter_e}，尝试从基础模型加载")
+            # 回退到从基础模型加载
+            if modelscope_available:
+                try:
+                    _, tokenizer = modelscope_utils.get_model_from_either(
+                        base_model_name,
+                        None,  # 不需要加载模型
+                        AutoTokenizer,
+                        use_modelscope=None,  # 自动决定
+                        trust_remote_code=True
+                    )
+                    if tokenizer is None:
+                        raise ValueError("从基础模型加载 tokenizer 失败")
+                except Exception as base_e:
+                    print(f"从基础模型通过 ModelScope 加载 tokenizer 失败: {base_e}")
+                    print("回退到 Hugging Face...")
+                    tokenizer = AutoTokenizer.from_pretrained(base_model_name, trust_remote_code=True)
+            else:
+                tokenizer = AutoTokenizer.from_pretrained(base_model_name, trust_remote_code=True)
+                
         tokenizer.save_pretrained(output_path_obj)
 
         print(f"\n-- Merge Successful! --")

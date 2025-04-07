@@ -5,6 +5,14 @@ from rich.console import Console
 from rich.panel import Panel
 from peft import PeftModel # Import PeftModel
 
+# 导入 ModelScope 相关工具
+try:
+    import modelscope_utils
+    modelscope_available = True
+except ImportError:
+    modelscope_available = False
+    print("注意: modelscope_utils 模块未找到。如果无法连接到 Hugging Face，将无法回退到 ModelScope。")
+
 console = Console()
 
 def run_inference(model, tokenizer, prompt):
@@ -60,20 +68,78 @@ def main(base_model_name, adapter_path):
     # -------------------------------------
     
     try:
-        # 1. 加载量化的基础模型
-        base_model = AutoModelForCausalLM.from_pretrained(
-            base_model_name,
-            quantization_config=quantization_config,
-            trust_remote_code=True,
-            device_map="auto"
-        )
+        # 1. 加载量化的基础模型，优先使用 ModelScope (如果可用)
+        if modelscope_available:
+            try:
+                console.print("[yellow]尝试使用 ModelScope 加载基础模型...[/yellow]")
+                base_model, _ = modelscope_utils.get_model_from_either(
+                    base_model_name,
+                    AutoModelForCausalLM,
+                    None,  # 不需要同时加载分词器
+                    use_modelscope=None,  # 自动决定
+                    quantization_config=quantization_config,
+                    trust_remote_code=True,
+                    device_map="auto"
+                )
+            except Exception as e:
+                console.print(f"[bold red]ModelScope 加载失败: {e}[/bold red]")
+                console.print("[yellow]回退到 Hugging Face...[/yellow]")
+                base_model = AutoModelForCausalLM.from_pretrained(
+                    base_model_name,
+                    quantization_config=quantization_config,
+                    trust_remote_code=True,
+                    device_map="auto"
+                )
+        else:
+            base_model = AutoModelForCausalLM.from_pretrained(
+                base_model_name,
+                quantization_config=quantization_config,
+                trust_remote_code=True,
+                device_map="auto"
+            )
+            
         console.print("[bold cyan]加载 LoRA 适配器: {adapter_path}[/bold cyan]")
         
         # 2. 加载并应用 LoRA 适配器
         model = PeftModel.from_pretrained(base_model, adapter_path)
         
-        # 3. 加载 Tokenizer (通常从适配器目录加载以确保一致性，但基础模型目录通常也可)
-        tokenizer = AutoTokenizer.from_pretrained(adapter_path, trust_remote_code=True)
+        # 3. 加载 Tokenizer (先尝试从适配器目录加载，确保一致性)
+        # 优先使用 ModelScope (如果可用)
+        try:
+            if modelscope_available:
+                console.print("[yellow]尝试使用 ModelScope 加载 tokenizer...[/yellow]")
+                _, tokenizer = modelscope_utils.get_model_from_either(
+                    adapter_path,  # 先尝试从适配器目录加载
+                    None,  # 不需要加载模型
+                    AutoTokenizer,
+                    use_modelscope=None,  # 自动决定
+                    trust_remote_code=True
+                )
+                if tokenizer is None:
+                    raise ValueError("tokenizer 加载失败")
+            else:
+                tokenizer = AutoTokenizer.from_pretrained(adapter_path, trust_remote_code=True)
+        except Exception as adapter_e:
+            console.print(f"[yellow]从适配器目录加载 tokenizer 失败: {adapter_e}，尝试从基础模型加载[/yellow]")
+            # 回退到从基础模型加载
+            if modelscope_available:
+                try:
+                    _, tokenizer = modelscope_utils.get_model_from_either(
+                        base_model_name,
+                        None,  # 不需要加载模型
+                        AutoTokenizer,
+                        use_modelscope=None,  # 自动决定
+                        trust_remote_code=True
+                    )
+                    if tokenizer is None:
+                        raise ValueError("从基础模型加载 tokenizer 失败")
+                except Exception as base_e:
+                    console.print(f"[bold red]从基础模型通过 ModelScope 加载 tokenizer 失败: {base_e}[/bold red]")
+                    console.print("[yellow]回退到 Hugging Face...[/yellow]")
+                    tokenizer = AutoTokenizer.from_pretrained(base_model_name, trust_remote_code=True)
+            else:
+                tokenizer = AutoTokenizer.from_pretrained(base_model_name, trust_remote_code=True)
+                
         if tokenizer.pad_token is None:
             tokenizer.pad_token = tokenizer.eos_token
             print("[dim]Tokenizer pad_token was None, set to eos_token.[/dim]")

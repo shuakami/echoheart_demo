@@ -1,0 +1,42 @@
+[
+  {
+    "messages": [
+      {
+        "role": "user",
+        "content": "Placeholder user query about project setup or features."
+      },
+      {
+        "role": "assistant",
+        "content": "Placeholder assistant response explaining setup steps or a specific feature."
+      }
+    ]
+  },
+  {
+    "messages": [
+      {
+        "role": "user",
+        "content": "Placeholder multi-turn user question about fine-tuning parameters."
+      },
+      {
+        "role": "assistant",
+        "content": "Placeholder assistant answer regarding LoRA parameters like rank or alpha."
+      }
+    ]
+  },
+  {
+    "messages": [
+      {
+        "role": "system",
+        "content": "Placeholder system message setting the context or persona."
+      },
+      {
+        "role": "user",
+        "content": "Placeholder user query asking for help with a task."
+      },
+      {
+        "role": "assistant",
+        "content": "Placeholder assistant response providing help or completing the task."
+      }
+    ]
+  }
+]

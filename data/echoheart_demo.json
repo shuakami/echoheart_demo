@@ -1,0 +1,17 @@
+[
+    {
+        "instruction": "Placeholder: Ask about the project's purpose.",
+        "input": "",
+        "output": "Placeholder: Explain the project aims to fine-tune models using QLoRA on Colab."
+    },
+    {
+        "instruction": "Placeholder: Ask about a specific feature like dynamic batch size.",
+        "input": "",
+        "output": "Placeholder: Describe the dynamic batch size feature and its benefits."
+    },
+    {
+        "instruction": "Placeholder: Ask how to configure the notebook.",
+        "input": "",
+        "output": "Placeholder: Explain that configuration happens in the first cell (model, dataset, hyperparameters)."
+    }
+    ]

@@ -14,7 +14,6 @@ from transformers import (
 from datasets import load_dataset, Dataset
 from torch.utils.data import DataLoader # 用于创建测试 DataLoader
 from peft import LoraConfig, get_peft_model, prepare_model_for_kbit_training
-from train_config import config
 from logger_utils import CustomTrainerCallback, console
 
 def get_gpu_memory_gb():
@@ -219,10 +218,10 @@ def main(args):
     target_modules = ["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"]
     
     lora_config = LoraConfig(
-        r=16, # LoRA 秩 (rank)，可以尝试 8, 16, 32, 64
-        lora_alpha=32, # LoRA alpha，通常是 r 的两倍
+        r=args.lora_r, # LoRA 秩 (rank)，可以尝试 8, 16, 32, 64
+        lora_alpha=args.lora_alpha, # LoRA alpha，通常是 r 的两倍
         target_modules=target_modules,
-        lora_dropout=0.05, # Dropout 比例
+        lora_dropout=args.lora_dropout, # Dropout 比例
         bias="none", # 通常设置为 none
         task_type="CAUSAL_LM",
     )
@@ -263,22 +262,22 @@ def main(args):
     console.print(f"[dim]混合精度设置: BF16={'可用' if use_bf16 else '不可用'}, FP16={'启用' if use_fp16 else '禁用'}[/dim]")
     # --------------------------
     
-    # 设置训练参数 (使用动态确定的值)
+    # 设置训练参数 (使用动态确定的值和命令行参数)
     training_args = TrainingArguments(
-        output_dir=config.output_dir,
-        num_train_epochs=config.num_train_epochs,
-        per_device_train_batch_size=determined_batch_size, # <--- 使用动态确定的值
-        gradient_accumulation_steps=gradient_accumulation_steps, # <--- 使用计算出的值
-        learning_rate=config.learning_rate,
-        weight_decay=config.weight_decay,
-        max_grad_norm=config.max_grad_norm,
-        save_steps=config.save_steps,
-        logging_steps=config.logging_steps,
-        fp16=use_fp16, # <--- 使用计算后的值
-        bf16=use_bf16, # <--- 使用计算后的值
-        gradient_checkpointing=True, # 仍然启用梯度检查点
-        optim="paged_adamw_8bit", # 使用 bitsandbytes 提供的优化器以节省显存
-        seed=config.seed,
+        output_dir=args.output_dir,             # <--- 使用 args
+        num_train_epochs=args.num_train_epochs, # <--- 使用 args
+        per_device_train_batch_size=determined_batch_size, 
+        gradient_accumulation_steps=gradient_accumulation_steps, 
+        learning_rate=args.learning_rate,       # <--- 使用 args
+        weight_decay=args.weight_decay,         # <--- 使用 args
+        max_grad_norm=args.max_grad_norm,       # <--- 使用 args
+        save_steps=args.save_steps,             # <--- 使用 args
+        logging_steps=args.logging_steps,         # <--- 使用 args
+        fp16=use_fp16, 
+        bf16=use_bf16, 
+        gradient_checkpointing=True, 
+        optim="paged_adamw_8bit", 
+        seed=args.seed,                         # <--- 使用 args
         report_to="none",
     )
     
@@ -299,21 +298,51 @@ def main(args):
     
     # 保存适配器模型 (LoRA 参数)
     console.print("[bold cyan]保存 LoRA 适配器模型...[/bold cyan]")
-    # Trainer 会自动处理 PEFT 模型的保存
     trainer.save_model() 
     # tokenizer 通常也需要保存，以防有更改
-    tokenizer.save_pretrained(config.output_dir)
+    tokenizer.save_pretrained(args.output_dir) # <--- 使用 args
     
-    console.print("QLoRA 训练完成！适配器保存在:", config.output_dir)
+    console.print("QLoRA 训练完成！适配器保存在:", args.output_dir) # <--- 使用 args
 
 if __name__ == "__main__":
     # --- 添加命令行参数解析 --- 
     parser = argparse.ArgumentParser(description="使用 QLoRA 微调语言模型")
+    
+    # 模型和数据路径
     parser.add_argument("--base_model_name", type=str, required=True, 
-                        help="要微调的基础 Hugging Face 模型名称或路径 (例如 'Qwen/Qwen2.5-1.5B-Instruct')")
+                        help="要微调的基础 Hugging Face 模型名称或路径")
     parser.add_argument("--dataset_file", type=str, required=True, 
                         help="包含 'messages' 字段的 JSON 数据集文件路径")
-    # 可以选择性地将 train_config 中的其他参数也移到这里，但暂时只处理这两个
+    parser.add_argument("--output_dir", type=str, default=None, 
+                        help="训练输出（适配器）保存目录。如果未指定，将基于模型名称自动生成。")
+                        
+    # 训练超参数
+    parser.add_argument("--num_train_epochs", type=int, default=2, help="训练轮数")
+    parser.add_argument("--learning_rate", type=float, default=2e-4, help="学习率")
+    parser.add_argument("--weight_decay", type=float, default=0.01, help="权重衰减")
+    parser.add_argument("--max_grad_norm", type=float, default=1.0, help="梯度裁剪范数")
+    
+    # LoRA 参数
+    parser.add_argument("--lora_r", type=int, default=16, help="LoRA 秩 (rank)")
+    parser.add_argument("--lora_alpha", type=int, default=32, help="LoRA alpha")
+    parser.add_argument("--lora_dropout", type=float, default=0.05, help="LoRA dropout")
+    # target_modules 通常基于模型架构，暂时硬编码，如果需要也可以添加参数
+    
+    # 保存、日志和种子
+    parser.add_argument("--save_steps", type=int, default=25, help="每 N 步保存一次 checkpoint")
+    parser.add_argument("--logging_steps", type=int, default=5, help="每 N 步记录一次日志")
+    parser.add_argument("--seed", type=int, default=42, help="随机种子")
+    
     args = parser.parse_args()
+    
+    # 如果未指定 output_dir，则自动生成
+    if args.output_dir is None:
+        safe_model_name = args.base_model_name.lower().replace('/', '-')
+        args.output_dir = f"output/{safe_model_name}-qlora-ft"
+        console.print(f"[dim]未指定输出目录，将使用自动生成的路径: {args.output_dir}[/dim]")
+    
+    # 确保输出目录存在
+    os.makedirs(args.output_dir, exist_ok=True)
+        
     # --------------------------
     main(args) # <--- 将解析后的参数传递给 main 函数

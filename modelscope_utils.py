@@ -183,82 +183,118 @@ def enable_modelscope(model_id: Optional[str] = None, token: Optional[str] = Non
     return True
 
 def get_model_from_either(
-    model_name: str, 
-    model_class: Any, 
-    tokenizer_class: Any = None,
+    model_name: str,
+    model_class: Any,  # 可以是 None
+    tokenizer_class: Any = None, # 可以是 None
     use_modelscope: Optional[bool] = None,
     modelscope_token: Optional[str] = None,
     **kwargs
-) -> Tuple[Any, Optional[Any]]:
+) -> Tuple[Optional[Any], Optional[Any]]: # 返回值也可能为 None
     """
-    从 Hugging Face 或 ModelScope 加载模型和分词器（如果提供）。
-    如果无法连接到 Hugging Face 或者指定了 use_modelscope=True，则使用 ModelScope。
-    
+    从 Hugging Face 或 ModelScope 加载模型和/或分词器。
+    如果 model_class 或 tokenizer_class 为 None，则不加载对应的部分。
+    如果无法连接到 Hugging Face 或者指定了 use_modelscope=True，则优先使用 ModelScope。
+
     Args:
         model_name: 模型名称或路径
-        model_class: 模型类，例如 AutoModelForCausalLM
+        model_class: 模型类，例如 AutoModelForCausalLM，如果为 None 则不加载模型
         tokenizer_class: 分词器类，例如 AutoTokenizer，如果为 None 则不加载分词器
         use_modelscope: 是否使用 ModelScope，如果为 None 则自动决定
         modelscope_token: ModelScope 访问令牌
         **kwargs: 传递给模型和分词器加载函数的参数
-        
+
     Returns:
-        Tuple[Any, Optional[Any]]: (model, tokenizer) 元组，如果未加载分词器则为 (model, None)
+        Tuple[Optional[Any], Optional[Any]]: (model, tokenizer) 元组
     """
+    model = None
+    tokenizer = None
+    source = "Hugging Face" # 默认源
+
     # 如果 use_modelscope 为 None，则自动决定
     if use_modelscope is None:
         use_modelscope = not check_huggingface_connectivity()
-    
+
     # 如果需要使用 ModelScope，则启用它
     if use_modelscope:
-        enable_modelscope(model_name, modelscope_token)
-        
-        # 导入 ModelScope
-        try:
-            import modelscope
-            from modelscope.utils.constant import Tasks
-            from modelscope import snapshot_download, AutoModelForCausalLM, AutoTokenizer
-            
-            # 将模型映射到 ModelScope ID
-            ms_model_id = map_model_id(model_name)
-            
-            # 如果是本地路径，直接使用；否则从 ModelScope 下载
-            if os.path.exists(model_name):
-                model_path = model_name
-            else:
-                print(f"正在从 ModelScope 下载模型: {ms_model_id} ...")
-                model_path = snapshot_download(ms_model_id)
-                print(f"模型下载完成，保存在: {model_path}")
-            
-            # 加载模型
-            print(f"正在从 {model_path} 加载模型...")
-            model = model_class.from_pretrained(model_path, **kwargs)
-            
-            # 如果提供了分词器类，也加载分词器
-            tokenizer = None
-            if tokenizer_class:
-                print(f"正在从 {model_path} 加载分词器...")
-                tokenizer = tokenizer_class.from_pretrained(model_path, **kwargs)
-            
-            return model, tokenizer
-            
-        except Exception as e:
-            print(f"从 ModelScope 加载模型或分词器失败: {e}")
-            print("将回退到 Hugging Face...")
-    
-    # 如果不使用 ModelScope 或者 ModelScope 失败，则尝试从 Hugging Face 加载
+        if enable_modelscope(model_name, modelscope_token):
+            source = "ModelScope"
+        else:
+            print("启用 ModelScope 失败，将尝试 Hugging Face。")
+            source = "Hugging Face"
+
+    # 尝试加载
     try:
-        print(f"正在从 Hugging Face 加载模型: {model_name} ...")
-        model = model_class.from_pretrained(model_name, **kwargs)
+        load_path = model_name # 默认从原始名称加载
         
-        # 如果提供了分词器类，也加载分词器
-        tokenizer = None
-        if tokenizer_class:
-            print(f"正在从 Hugging Face 加载分词器: {model_name} ...")
-            tokenizer = tokenizer_class.from_pretrained(model_name, **kwargs)
+        if source == "ModelScope":
+            # 导入 ModelScope
+            try:
+                from modelscope import snapshot_download, AutoModelForCausalLM, AutoTokenizer
+                
+                # 将模型映射到 ModelScope ID
+                ms_model_id = map_model_id(model_name)
+                
+                # 如果是本地路径，直接使用；否则从 ModelScope 下载
+                if os.path.exists(model_name):
+                    load_path = model_name
+                else:
+                    print(f"正在从 ModelScope 下载资源: {ms_model_id} ...")
+                    # 注意: snapshot_download 会下载整个 repo，可能包含模型和分词器
+                    load_path = snapshot_download(ms_model_id)
+                    print(f"资源下载完成，保存在: {load_path}")
+                    
+            except Exception as e:
+                print(f"从 ModelScope 下载失败: {e}")
+                # 如果下载失败，尝试回退到 Hugging Face
+                print("将回退到 Hugging Face...")
+                source = "Hugging Face"
+                load_path = model_name # 重置加载路径
         
+        # --- 根据 source 和 load_path 加载 --- 
+        # 加载模型 (如果 model_class 不为 None)
+        if model_class is not None:
+            print(f"正在从 {source} 加载模型: {load_path} ...")
+            # 移除可能冲突的 token 参数（如果存在于 kwargs 中）
+            model_kwargs = kwargs.copy()
+            model_kwargs.pop('token', None)
+            model = model_class.from_pretrained(load_path, **model_kwargs)
+            
+        # 加载分词器 (如果 tokenizer_class 不为 None)
+        if tokenizer_class is not None:
+            print(f"正在从 {source} 加载分词器: {load_path} ...")
+             # 移除可能冲突的 token 参数
+            tokenizer_kwargs = kwargs.copy()
+            tokenizer_kwargs.pop('token', None)
+            tokenizer = tokenizer_class.from_pretrained(load_path, **tokenizer_kwargs)
+            
         return model, tokenizer
-        
+
     except Exception as e:
-        print(f"从 Hugging Face 加载模型或分词器失败: {e}")
-        raise e  # 如果两种方式都失败，则抛出异常 
+        print(f"从 {source} 加载失败: {e}")
+        # 如果 ModelScope 失败，并且最初尝试的就是 ModelScope，则尝试 Hugging Face
+        if source == "ModelScope":
+            print("ModelScope 加载失败，尝试回退到 Hugging Face...")
+            source = "Hugging Face"
+            load_path = model_name
+            try:
+                # 加载模型 (如果 model_class 不为 None)
+                if model_class is not None:
+                    print(f"正在从 {source} 加载模型: {load_path} ...")
+                    model_kwargs = kwargs.copy()
+                    model_kwargs.pop('token', None)
+                    model = model_class.from_pretrained(load_path, **model_kwargs)
+                    
+                # 加载分词器 (如果 tokenizer_class 不为 None)
+                if tokenizer_class is not None:
+                    print(f"正在从 {source} 加载分词器: {load_path} ...")
+                    tokenizer_kwargs = kwargs.copy()
+                    tokenizer_kwargs.pop('token', None)
+                    tokenizer = tokenizer_class.from_pretrained(load_path, **tokenizer_kwargs)
+                    
+                return model, tokenizer
+            except Exception as hf_e:
+                print(f"从 Hugging Face 也加载失败: {hf_e}")
+                raise hf_e # 如果两种方式都失败，则抛出最终异常
+        else:
+             # 如果最初尝试的就是 Hugging Face 并且失败了，直接抛出异常
+             raise e 

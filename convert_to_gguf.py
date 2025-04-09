@@ -43,9 +43,29 @@ def main(model_dir, output_file, llama_cpp_dir="llama.cpp", out_type="f16"):
 
     if not llama_cpp_path.exists():
         print(f"\nCloning llama.cpp into {llama_cpp_path}...")
-        ret_code = run_command(["git", "clone", "--depth=1", "https://github.com/ggerganov/llama.cpp.git", str(llama_cpp_path)])
+        # 尝试从 GitHub 克隆
+        github_url = "https://github.com/ggerganov/llama.cpp.git"
+        mirror_url = "https://ghfast.top/https://github.com/ggerganov/llama.cpp.git"
+        
+        ret_code = run_command(["git", "clone", "--depth=1", github_url, str(llama_cpp_path)])
+        
+        # 如果 GitHub 克隆失败，尝试使用镜像
         if ret_code != 0:
-            print("Failed to clone llama.cpp. Aborting conversion.")
+            print(f"Warning: Cloning from GitHub ({github_url}) failed. Trying mirror ({mirror_url})...")
+            # 确保在重试前删除可能已部分创建的目录
+            if llama_cpp_path.exists():
+                import shutil
+                try:
+                    shutil.rmtree(llama_cpp_path)
+                    print(f"Removed partially created directory: {llama_cpp_path}")
+                except Exception as rm_e:
+                    print(f"Warning: Failed to remove partially created directory {llama_cpp_path}: {rm_e}")
+                    
+            ret_code = run_command(["git", "clone", "--depth=1", mirror_url, str(llama_cpp_path)])
+            
+        # 如果两次都失败
+        if ret_code != 0:
+            print("Failed to clone llama.cpp from both GitHub and mirror. Aborting conversion.")
             sys.exit(1)
     else:
         print(f"\nUsing existing llama.cpp directory: {llama_cpp_path}")
